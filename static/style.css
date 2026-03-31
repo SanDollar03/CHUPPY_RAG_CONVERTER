@@ -1,31 +1,22 @@
-/* static/style.css */
 :root {
     --bg: #f5f6fa;
     --panel: #ffffff;
     --surface: #f3f4f6;
-
     --text: #111827;
     --muted: rgba(0, 0, 0, .60);
-
     --line: rgba(0, 0, 0, .10);
     --input-line: rgba(0, 0, 0, .16);
-
     --accent: #7c3aed;
     --accent-soft: rgba(124, 58, 237, .12);
     --accent-line: rgba(124, 58, 237, .28);
-
     --ok: #16a34a;
     --bad: #b91c1c;
     --skip: #b45309;
-
     --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-
     --r-card: 16px;
     --r-input: 12px;
     --r-pill: 999px;
-
     --control-h: 44px;
-
     --shadow-1: 0 10px 24px rgba(0, 0, 0, .08);
 }
 
@@ -76,11 +67,11 @@ body {
 .topbar-banner {
     height: 60px;
     width: auto;
+    max-width: 100%;
+    min-width: 0;
     object-fit: contain;
     display: block;
     flex: 1 1 240px;
-    min-width: 0;
-    max-width: 100%;
 }
 
 .topbar-actions {
@@ -99,20 +90,24 @@ body {
     flex: 0 0 auto;
 }
 
-.modeBtn {
+.modeBtn,
+.model-pill {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    border-radius: var(--r-pill);
+    font-weight: 900;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.modeBtn {
     height: 36px;
     padding: 0 14px;
-    border-radius: var(--r-pill);
     border: 1px solid var(--line);
     background: rgba(255, 255, 255, .92);
     color: rgba(0, 0, 0, .86);
     text-decoration: none;
-    font-weight: 900;
-    font-size: 13px;
-    white-space: nowrap;
 }
 
 .modeBtn.active {
@@ -121,22 +116,15 @@ body {
 }
 
 .model-pill {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
     padding: 8px 14px;
-    border-radius: var(--r-pill);
     border: 1px solid var(--accent-line);
     background: var(--accent-soft);
     color: rgba(0, 0, 0, .80);
-    font-weight: 900;
-    font-size: 13px;
-    white-space: nowrap;
     flex: 0 1 auto;
     max-width: 100%;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    min-width: 0;
 }
 
 .grid {
@@ -166,9 +154,9 @@ body {
 
 label {
     display: block;
+    margin: 12px 0 6px;
     color: var(--muted);
     font-size: 13px;
-    margin: 12px 0 6px;
 }
 
 input:not([type="checkbox"]),
@@ -178,7 +166,7 @@ select {
     padding: 0 14px;
     border-radius: var(--r-input);
     border: 1px solid var(--input-line);
-    background: #ffffff;
+    background: #fff;
     color: var(--text);
     outline: none;
     font-size: 14px;
@@ -195,10 +183,14 @@ select:focus {
     box-shadow: 0 0 0 3px rgba(124, 58, 237, .14);
 }
 
-.row {
+.row,
+.runRow {
     display: flex;
     align-items: center;
     gap: 10px;
+}
+
+.row {
     margin-top: 12px;
 }
 
@@ -219,7 +211,7 @@ button {
     padding: 0 16px;
     border-radius: 12px;
     border: 1px solid var(--input-line);
-    background: #ffffff;
+    background: #fff;
     color: var(--text);
     cursor: pointer;
     font-size: 14px;
@@ -260,14 +252,14 @@ button:disabled {
 }
 
 .box {
-    border: 1px solid var(--line);
-    background: var(--surface);
-    border-radius: 14px;
-    padding: 14px;
     min-height: 300px;
     max-height: 560px;
     overflow-y: auto;
     overflow-x: hidden;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    border-radius: 14px;
+    padding: 14px;
 }
 
 .mono {
@@ -286,9 +278,6 @@ button:disabled {
 }
 
 .runRow {
-    display: flex;
-    align-items: center;
-    gap: 10px;
     flex-wrap: nowrap;
 }
 
@@ -297,7 +286,6 @@ button:disabled {
     white-space: nowrap;
 }
 
-/* dataset row: select + button (right) */
 .inlineRow {
     align-items: stretch;
     flex-wrap: nowrap;
@@ -313,13 +301,614 @@ button:disabled {
     white-space: nowrap;
 }
 
-@media (max-width: 980px) {
-    .grid {
-        grid-template-columns: 1fr;
+.log-line {
+    display: block;
+    margin-bottom: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.25;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.log-ts,
+.log-sub,
+.log-submark {
+    color: var(--muted);
+}
+
+.log-ts,
+.log-tag,
+.log-submark {
+    margin-right: 8px;
+}
+
+.log-tag {
+    font-weight: 700;
+}
+
+.log-tag.ok {
+    color: var(--ok);
+}
+
+.log-tag.err {
+    color: var(--bad);
+}
+
+.log-tag.skip {
+    color: var(--skip);
+}
+
+.log-msg,
+.log-submsg {
+    color: var(--text);
+}
+
+.log-sub {
+    display: block;
+    padding-left: 18px;
+}
+
+.log-submsg {
+    word-break: break-word;
+}
+
+body.modalOpen {
+    overflow: hidden;
+}
+
+.modalOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, .45);
+}
+
+.modalOverlay.show {
+    display: flex;
+}
+
+.modalCard {
+    width: min(920px, 100%);
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    box-shadow: var(--shadow-1);
+}
+
+.modalHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+}
+
+.modalTitle {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 900;
+    font-size: 14px;
+    letter-spacing: .02em;
+}
+
+.modalClose {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    flex: 0 0 auto;
+    border-radius: 12px;
+    border: 1px solid var(--input-line);
+    background: #fff;
+    color: var(--text);
+    font-size: 20px;
+    line-height: 1;
+}
+
+.modalBody {
+    flex: 1 1 auto;
+    min-height: 140px;
+    overflow: auto;
+    padding: 14px 16px;
+    background: var(--surface);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    font-size: 12px;
+}
+
+.modalFoot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--line);
+}
+
+.kbar {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 80px minmax(260px, 1fr) 120px 80px minmax(260px, 1fr) 140px 120px;
+    gap: 10px;
+    align-items: center;
+}
+
+.kbarLabel {
+    margin: 0;
+    min-width: 72px;
+    line-height: 1;
+    display: inline-flex;
+    justify-content: flex-end;
+    text-align: right;
+}
+
+.kbarSelect,
+.kbarInput {
+    width: 100%;
+    min-width: 0;
+}
+
+.kbar button {
+    width: 100%;
+    min-width: 120px;
+    height: 36px;
+    padding: 0 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 900;
+}
+
+.segBar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.segBar .segLabel {
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.segBar input,
+.segBar select {
+    height: var(--control-h);
+}
+
+.kTable {
+    text-align: left;
+    table-layout: fixed;
+}
+
+.kTable th,
+.kTable td {
+    text-align: left;
+}
+
+.kTable thead th,
+.kTable tbody td {
+    border-right: 1px solid rgba(0, 0, 0, .10);
+}
+
+.kTable thead th:last-child,
+.kTable tbody td:last-child {
+    border-right: none;
+}
+
+body.ondemand-page .ondemandGrid {
+    margin-top: 16px;
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 14px;
+}
+
+body.ondemand-page .ondemandSidebarCard,
+body.ondemand-page .ondemandMainCard {
+    padding: 14px;
+}
+
+body.ondemand-page .ondemandSidebarCard {
+    padding: 10px;
+}
+
+body.ondemand-page .ondemandSectionHead {
+    margin-bottom: 6px;
+}
+
+body.ondemand-page .ondemandSectionHead h2 {
+    margin: 0 0 4px;
+    font-size: 13px;
+    font-weight: 900;
+}
+
+body.ondemand-page .ondemandRoot {
+    font-size: 10px;
+    color: var(--muted);
+    word-break: break-all;
+    line-height: 1.3;
+}
+
+body.ondemand-page .folderTreeMini {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+body.ondemand-page .folderTreeItem {
+    display: block;
+}
+
+body.ondemand-page .folderTreeRow {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+body.ondemand-page .folderTreeChildren {
+    margin-left: 9px;
+    margin-top: 1px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+body.ondemand-page .folderTreeChildren[hidden] {
+    display: none !important;
+}
+
+body.ondemand-page .folderTreeToggle {
+    width: 14px;
+    min-width: 14px;
+    height: 14px;
+    padding: 0;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+    background: #fff;
+    box-shadow: none;
+    font-size: 9px;
+    font-weight: 900;
+    line-height: 1;
+}
+
+body.ondemand-page .folderTreeToggle:disabled {
+    opacity: .28;
+    cursor: default;
+}
+
+body.ondemand-page .folderTreeNode {
+    width: 100%;
+    min-width: 0;
+    min-height: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    background: transparent;
+    box-shadow: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    text-align: left;
+}
+
+body.ondemand-page .folderTreeNode:hover {
+    background: rgba(124, 58, 237, .035);
+}
+
+body.ondemand-page .folderTreeItem.selected>.folderTreeRow>.folderTreeNode {
+    border-color: var(--accent-line);
+    background: rgba(124, 58, 237, .08);
+}
+
+body.ondemand-page .folderTreeName {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+body.ondemand-page .folderTreeMeta {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+body.ondemand-page .folderTreeCount {
+    color: #2563eb;
+}
+
+body.ondemand-page .folderTreeSize {
+    color: #dc2626;
+}
+
+body.ondemand-page .folderTreeSep {
+    color: var(--muted);
+}
+
+body.ondemand-page .ondemandTopBar {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+body.ondemand-page .ondemandCurrentWrap {
+    min-width: 0;
+}
+
+body.ondemand-page .ondemandCurrentPath {
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.45;
+    word-break: break-all;
+}
+
+body.ondemand-page .ondemandCurrentMeta {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--muted);
+}
+
+body.ondemand-page .ondemandTopActions button,
+body.ondemand-page .ondemandDropZone button {
+    height: 34px;
+    font-size: 12px;
+    box-shadow: none;
+}
+
+body.ondemand-page .ondemandTopActions button {
+    min-width: 84px;
+}
+
+body.ondemand-page .ondemandDropZone {
+    padding: 14px 12px;
+    text-align: center;
+    border: 1px dashed var(--accent-line);
+    border-radius: 12px;
+    background: rgba(124, 58, 237, .04);
+}
+
+body.ondemand-page .ondemandDropZone.ready {
+    border-color: rgba(22, 163, 74, .35);
+    background: rgba(22, 163, 74, .06);
+}
+
+body.ondemand-page .ondemandDropZone.dragover {
+    background: rgba(124, 58, 237, .10);
+}
+
+body.ondemand-page .ondemandDropZone.disabled {
+    opacity: .55;
+    border-color: rgba(0, 0, 0, .12);
+    background: rgba(0, 0, 0, .03);
+}
+
+body.ondemand-page .ondemandDropTitle {
+    font-size: 13px;
+    font-weight: 900;
+}
+
+body.ondemand-page .ondemandDropSub {
+    margin-top: 4px;
+    margin-bottom: 10px;
+    font-size: 11px;
+    color: var(--muted);
+}
+
+body.ondemand-page .ondemandListSection,
+body.ondemand-page .ondemandLogSection {
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface);
+}
+
+body.ondemand-page .ondemandListHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+body.ondemand-page .ondemandListState {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+body.ondemand-page .ondemandEmptyBox {
+    padding: 18px 12px;
+    text-align: center;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .60);
+    color: var(--muted);
+    font-size: 12px;
+}
+
+body.ondemand-page .ondemandTableWrap {
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fff;
+}
+
+body.ondemand-page .ondemandTable {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+body.ondemand-page .ondemandTable th,
+body.ondemand-page .ondemandTable td {
+    padding: 6px 7px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    font-size: 11px;
+    line-height: 1.25;
+}
+
+body.ondemand-page .ondemandTable th {
+    background: rgba(255, 255, 255, .85);
+    color: var(--muted);
+    font-weight: 800;
+}
+
+body.ondemand-page .ondemandTable td:nth-child(2) {
+    word-break: break-word;
+}
+
+body.ondemand-page .ondemandTable tr:last-child td {
+    border-bottom: none;
+}
+
+body.ondemand-page .ondemandLogBox {
+    min-height: 120px;
+    max-height: 220px;
+    overflow: auto;
+    padding: 10px;
+    border-radius: 10px;
+    background: #111827;
+    color: #e5e7eb;
+    font-family: var(--mono);
+    font-size: 11px;
+}
+
+body.ondemand-page .ondemandLogRow {
+    margin-bottom: 4px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+body.ondemand-page .ondemandLogRow.ok {
+    color: #86efac;
+}
+
+body.ondemand-page .ondemandLogRow.err {
+    color: #fca5a5;
+}
+
+body.ondemand-page .ondemandLogRow.warn {
+    color: #fcd34d;
+}
+
+body.ondemand-page .ondemandLogRow.info {
+    color: #c4b5fd;
+}
+
+body.ondemand-page .hidden {
+    display: none !important;
+}
+
+@media (min-width: 901px) {
+    .segBar {
+        flex-wrap: nowrap;
     }
 
-    .split {
+    #segKeyword {
+        flex: 1 1 auto;
+        min-width: 260px;
+    }
+
+    #segStatus {
+        flex: 0 0 180px;
+    }
+
+    #segSearchBtn,
+    #segPrevBtn,
+    #segNextBtn {
+        flex: 0 0 auto;
+        width: auto;
+        min-width: 110px;
+    }
+
+    #segPageInfo,
+    #segTotalInfo {
+        white-space: nowrap;
+    }
+}
+
+@media (max-width: 980px) {
+
+    .grid,
+    .split,
+    body.ondemand-page .ondemandGrid {
         grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 900px) {
+    .kbar {
+        grid-template-columns: 80px 1fr;
+        grid-auto-rows: auto;
+        gap: 10px;
+    }
+
+    .kbarLabel:nth-of-type(1) {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    #dataset {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    #reloadDatasetsBtn {
+        grid-column: 2;
+        grid-row: 2;
+    }
+
+    .kbarLabel:nth-of-type(2) {
+        grid-column: 1;
+        grid-row: 3;
+    }
+
+    #docKeyword {
+        grid-column: 2;
+        grid-row: 3;
+    }
+
+    #refreshBtn {
+        grid-column: 2;
+        grid-row: 4;
+    }
+
+    #clearBtn {
+        grid-column: 2;
+        grid-row: 5;
+    }
+
+    .kbar button {
+        width: 100%;
+        min-width: 0;
+    }
+}
+
+@media (max-width: 640px) {
+    .kbarLabel {
+        min-width: 56px;
     }
 }
 
@@ -360,18 +949,18 @@ button:disabled {
         justify-content: center;
     }
 
-    .row2 {
-        flex-direction: column;
-    }
-
-    button {
-        width: 100%;
-    }
-
-    .runRow {
+    .row2,
+    .runRow,
+    body.ondemand-page .ondemandTopBar {
         flex-direction: column;
         align-items: stretch;
-        gap: 8px;
+    }
+
+    button,
+    .inlineRow button,
+    .modalFoot button,
+    body.ondemand-page .ondemandTopActions button {
+        width: 100%;
     }
 
     .overwriteOpt {
@@ -382,150 +971,6 @@ button:disabled {
         flex-wrap: wrap;
     }
 
-    .inlineRow button {
-        width: 100%;
-    }
-}
-
-/* log styles */
-.log-line {
-    display: block;
-    font-family: var(--mono);
-    font-size: 12px;
-    line-height: 1.25;
-    margin-bottom: 4px;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-
-.log-ts {
-    color: var(--muted);
-    margin-right: 8px;
-}
-
-.log-tag {
-    font-weight: 700;
-    margin-right: 8px;
-}
-
-.log-tag.ok {
-    color: var(--ok);
-}
-
-.log-tag.err {
-    color: var(--bad);
-}
-
-.log-tag.skip {
-    color: var(--skip);
-}
-
-.log-msg {
-    color: var(--text);
-}
-
-.log-sub {
-    padding-left: 18px;
-    color: var(--muted);
-    display: block;
-}
-
-.log-submark {
-    margin-right: 8px;
-    color: var(--muted);
-}
-
-.log-submsg {
-    color: var(--text);
-    word-break: break-word;
-}
-
-/* NOTICE Modal */
-body.modalOpen {
-    overflow: hidden;
-}
-
-.modalOverlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, .45);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    padding: 16px;
-    z-index: 9999;
-}
-
-.modalOverlay.show {
-    display: flex;
-}
-
-.modalCard {
-    width: min(920px, 100%);
-    max-height: 88vh;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: var(--r-card);
-    box-shadow: var(--shadow-1);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-
-.modalHead {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--line);
-    gap: 10px;
-    min-width: 0;
-}
-
-.modalTitle {
-    font-weight: 900;
-    font-size: 14px;
-    letter-spacing: .02em;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.modalClose {
-    width: 40px;
-    height: 40px;
-    border-radius: 12px;
-    border: 1px solid var(--input-line);
-    background: #ffffff;
-    color: var(--text);
-    font-size: 20px;
-    line-height: 1;
-    padding: 0;
-    flex: 0 0 auto;
-}
-
-.modalBody {
-    padding: 14px 16px;
-    overflow: auto;
-    background: var(--surface);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-    flex: 1 1 auto;
-    min-height: 140px;
-    font-size: 12px;
-}
-
-.modalFoot {
-    padding: 12px 16px;
-    border-top: 1px solid var(--line);
-    display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-}
-
-@media (max-width: 520px) {
     .modalOverlay {
         padding: 10px;
     }
@@ -557,93 +1002,6 @@ body.modalOpen {
         padding: 10px 12px;
     }
 
-    .modalFoot button {
-        width: 100%;
-    }
-}
-/* ===== knowledge: right-aligned labels ===== */
-.kbarLabel {
-    display: inline-flex;
-    justify-content: flex-end;
-    text-align: right;
-    min-width: 72px;
-}
-
-@media (max-width: 640px) {
-    .kbarLabel {
-        min-width: 56px;
-    }
-}
-
-/* ===== knowledge: responsive toolbar layout (PC horizontal / mobile vertical) ===== */
-.kbar {
-    width: 100%;
-    display: grid;
-    grid-template-columns:
-        80px minmax(260px, 1fr)
-        120px
-        80px minmax(260px, 1fr)
-        140px 120px;
-    gap: 10px;
-    align-items: center;
-}
-
-/* Labels: right aligned (PC) */
-.kbarLabel {
-    margin: 0;
-    line-height: 1;
-    display: inline-flex;
-    justify-content: flex-end;
-    text-align: right;
-    min-width: 72px;
-}
-
-/* Inputs full width inside grid cells */
-.kbarSelect,
-.kbarInput {
-    width: 100%;
-    min-width: 0;
-}
-
-/* Buttons: compact */
-.kbar button {
-    height: 36px;
-    padding: 0 12px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 900;
-    min-width: 120px;
-    width: 100%;
-}
-
-/* Tablet: 2-column form + buttons stacked to the right/under (no overlap) */
-@media (max-width: 900px) {
-    .kbar {
-        grid-template-columns: 80px 1fr;
-        grid-auto-rows: auto;
-        gap: 10px;
-    }
-
-    /* place elements explicitly by id to avoid nth-child mismatch */
-    .kbarLabel:nth-of-type(1) { grid-column: 1; grid-row: 1; }
-    #dataset               { grid-column: 2; grid-row: 1; }
-
-    #reloadDatasetsBtn     { grid-column: 2; grid-row: 2; }
-
-    .kbarLabel:nth-of-type(2) { grid-column: 1; grid-row: 3; }
-    #docKeyword            { grid-column: 2; grid-row: 3; }
-
-    #refreshBtn            { grid-column: 2; grid-row: 4; }
-    #clearBtn              { grid-column: 2; grid-row: 5; }
-
-    .kbar button {
-        width: 100%;
-        min-width: 0;
-    }
-}
-
-/* Mobile (<=520px / 320px minimum): vertical stack, equal widths, no overlap */
-@media (max-width: 520px) {
     .kbar {
         grid-template-columns: 1fr;
         grid-auto-rows: auto;
@@ -651,20 +1009,46 @@ body.modalOpen {
     }
 
     .kbarLabel {
+        min-width: 0;
         justify-content: flex-start;
         text-align: left;
-        min-width: 0;
         font-size: 13px;
     }
 
-    .kbarLabel:nth-of-type(1) { grid-column: 1; grid-row: 1; }
-    #dataset               { grid-column: 1; grid-row: 2; }
-    #reloadDatasetsBtn     { grid-column: 1; grid-row: 3; }
+    .kbarLabel:nth-of-type(1) {
+        grid-column: 1;
+        grid-row: 1;
+    }
 
-    .kbarLabel:nth-of-type(2) { grid-column: 1; grid-row: 4; }
-    #docKeyword            { grid-column: 1; grid-row: 5; }
-    #refreshBtn            { grid-column: 1; grid-row: 6; }
-    #clearBtn              { grid-column: 1; grid-row: 7; }
+    #dataset {
+        grid-column: 1;
+        grid-row: 2;
+    }
+
+    #reloadDatasetsBtn {
+        grid-column: 1;
+        grid-row: 3;
+    }
+
+    .kbarLabel:nth-of-type(2) {
+        grid-column: 1;
+        grid-row: 4;
+    }
+
+    #docKeyword {
+        grid-column: 1;
+        grid-row: 5;
+    }
+
+    #refreshBtn {
+        grid-column: 1;
+        grid-row: 6;
+    }
+
+    #clearBtn {
+        grid-column: 1;
+        grid-row: 7;
+    }
 
     .kbarSelect,
     .kbarInput,
@@ -676,6 +1060,19 @@ body.modalOpen {
     .kbar button {
         height: 38px;
     }
+
+    .kTable td:first-child {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        word-break: break-word;
+    }
+
+    body.ondemand-page .ondemandTable th,
+    body.ondemand-page .ondemandTable td {
+        font-size: 11px;
+        padding: 6px 7px;
+    }
 }
 
 @media (max-width: 360px) {
@@ -686,84 +1083,5 @@ body.modalOpen {
     .kbar button {
         height: 36px;
         font-size: 12px;
-    }
-}
-
-/* ===== chunk detail toolbar (segBar) ===== */
-.segBar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-}
-
-.segBar .segLabel {
-    color: var(--muted);
-    font-size: 12px;
-    white-space: nowrap;
-}
-
-.segBar input,
-.segBar select {
-    height: var(--control-h);
-}
-
-/* PC: keep buttons (検索/前へ/次へ) inline */
-@media (min-width: 901px) {
-    .segBar {
-        flex-wrap: nowrap;
-    }
-
-    #segKeyword {
-        flex: 1 1 auto;
-        min-width: 260px;
-    }
-
-    #segStatus {
-        flex: 0 0 180px;
-    }
-
-    #segSearchBtn,
-    #segPrevBtn,
-    #segNextBtn {
-        flex: 0 0 auto;
-        width: auto;
-        min-width: 110px;
-    }
-
-    #segPageInfo,
-    #segTotalInfo {
-        white-space: nowrap;
-    }
-}
-
-/* ===== knowledge: table vertical separators & left align (stable) ===== */
-.kTable {
-    text-align: left;
-    table-layout: fixed;
-}
-
-.kTable th,
-.kTable td {
-    text-align: left;
-}
-
-.kTable thead th,
-.kTable tbody td {
-    border-right: 1px solid rgba(0,0,0,.10);
-}
-
-.kTable thead th:last-child,
-.kTable tbody td:last-child {
-    border-right: none;
-}
-
-/* Allow filename column to wrap on small screens */
-@media (max-width: 520px) {
-    .kTable td:first-child {
-        white-space: normal;
-        overflow: visible;
-        text-overflow: clip;
-        word-break: break-word;
     }
 }

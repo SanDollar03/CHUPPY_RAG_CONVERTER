@@ -34,6 +34,14 @@ DATASET_API_BASE = (os.getenv("DIFY_DATASET_API_BASE") or API_BASE).strip().rstr
 DATASET_API_KEY = (os.getenv("DIFY_DATASET_API_KEY") or API_KEY).strip()
 DATASET_NAME_PREFIX = (os.getenv("DATASET_NAME_PREFIX") or "Chu_").strip()
 
+# On-demand explorer root
+EXPLORER_ROOT = os.path.normpath(
+    os.getenv("CHUPPY_EXPLORER_ROOT") or r"\\172.27.23.54\disk1\Chuppy"
+)
+UPLOAD_MAX_FILES = 100
+EXPLORER_MAX_DEPTH = 5
+UPLOAD_ALLOWED_DEPTH = 5
+
 ALLOWED_EXTS = {
     ".txt", ".md", ".csv", ".json", ".log",
     ".html", ".xml", ".yml", ".yaml", ".ini", ".conf",
@@ -47,11 +55,8 @@ MAX_INPUT_CHARS = 180_000
 DEFAULT_CHUNK_SEP = "***"
 REQ_TIMEOUT_SEC = 300
 
-# Dify knowledge indexing polling
 INDEXING_POLL_SEC = float(os.getenv("DIFY_INDEXING_POLL_SEC") or "2.0")
 INDEXING_MAX_WAIT_SEC = int(os.getenv("DIFY_INDEXING_MAX_WAIT_SEC") or "900")
-
-# Dify segmentation max_tokens upper bound (per your env)
 DIFY_MAX_SEG_TOKENS = int(os.getenv("DIFY_MAX_SEG_TOKENS") or "2000")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -104,6 +109,17 @@ def create_app():
             dataset_prefix=DATASET_NAME_PREFIX,
         )
 
+    @app.get("/ondemand")
+    def ondemand_page():
+        return render_template(
+            "ondemand.html",
+            title=APP_TITLE + " (ON DEMAND)",
+            model_label=HEADER_MODEL_LABEL,
+            explorer_root=EXPLORER_ROOT,
+            explorer_max_depth=EXPLORER_MAX_DEPTH,
+            upload_allowed_depth=UPLOAD_ALLOWED_DEPTH,
+        )
+
     @app.get("/api/health")
     def api_health():
         return jsonify({
@@ -112,6 +128,9 @@ def create_app():
             "dataset_api_ready": bool(DATASET_API_BASE and DATASET_API_KEY),
             "dataset_prefix": DATASET_NAME_PREFIX,
             "model_label": HEADER_MODEL_LABEL,
+            "explorer_root": EXPLORER_ROOT,
+            "explorer_max_depth": EXPLORER_MAX_DEPTH,
+            "upload_allowed_depth": UPLOAD_ALLOWED_DEPTH,
         })
 
     @app.get("/api/notice")
@@ -275,6 +294,109 @@ def create_app():
             out["item"] = seg
         return jsonify(out)
 
+    @app.get("/api/explorer/root")
+    def api_explorer_root():
+        try:
+            stats_cache: Dict[str, Dict[str, int]] = {}
+            root_info = build_dir_info(EXPLORER_ROOT, EXPLORER_ROOT, stats_cache)
+            root_info["depth"] = 0
+            root_info["can_upload"] = False
+            root_info["has_children"] = dir_has_child_dirs(EXPLORER_ROOT)
+            return jsonify({
+                "ok": True,
+                "root": root_info,
+                "max_depth": EXPLORER_MAX_DEPTH,
+                "upload_allowed_depth": UPLOAD_ALLOWED_DEPTH,
+            })
+        except Exception as e:
+            return jsonify({"ok": False, "error": safe_err(str(e))}), 500
+
+    @app.get("/api/explorer/list")
+    def api_explorer_list():
+        rel_path = (request.args.get("path") or "").strip()
+
+        try:
+            abs_dir = resolve_explorer_path(EXPLORER_ROOT, rel_path)
+            if not os.path.isdir(abs_dir):
+                return jsonify({"ok": False, "error": "対象フォルダが存在しません。"}), 404
+
+            dirs, files = list_explorer_dir(abs_dir, EXPLORER_ROOT)
+            stats_cache: Dict[str, Dict[str, int]] = {}
+            current = build_dir_info(abs_dir, EXPLORER_ROOT, stats_cache)
+            return jsonify({
+                "ok": True,
+                "current": current,
+                "dirs": dirs,
+                "files": files,
+                "max_depth": EXPLORER_MAX_DEPTH,
+                "upload_allowed_depth": UPLOAD_ALLOWED_DEPTH,
+            })
+        except Exception as e:
+            return jsonify({"ok": False, "error": safe_err(str(e))}), 400
+
+    @app.post("/api/explorer/upload")
+    def api_explorer_upload():
+        rel_path = (request.form.get("path") or "").strip()
+
+        try:
+            target_dir = resolve_explorer_path(EXPLORER_ROOT, rel_path)
+        except Exception as e:
+            return jsonify({"ok": False, "error": safe_err(str(e))}), 400
+
+        if not os.path.isdir(target_dir):
+            return jsonify({"ok": False, "error": "保存先フォルダが存在しません。"}), 404
+
+        depth = path_depth_from_root(target_dir, EXPLORER_ROOT)
+        if depth != UPLOAD_ALLOWED_DEPTH:
+            return jsonify({
+                "ok": False,
+                "error": f"ファイル追加が許可されているのは {UPLOAD_ALLOWED_DEPTH} 階層目のフォルダのみです。"
+            }), 400
+
+        files = request.files.getlist("files")
+        if not files:
+            return jsonify({"ok": False, "error": "アップロードするファイルがありません。"}), 400
+
+        if len(files) > UPLOAD_MAX_FILES:
+            return jsonify({"ok": False, "error": f"一度にアップロードできるのは最大 {UPLOAD_MAX_FILES} 件です。"}), 400
+
+        saved = []
+        skipped = []
+        errors = []
+
+        for f in files:
+            try:
+                original_name = (f.filename or "").strip()
+                if not original_name:
+                    skipped.append({"name": "", "reason": "ファイル名が空です。"})
+                    continue
+
+                filename = sanitize_upload_filename(original_name)
+                if not filename:
+                    skipped.append({"name": original_name, "reason": "使用できないファイル名です。"})
+                    continue
+
+                filename = add_upload_timestamp_prefix(filename)
+                save_path = build_unique_upload_path(target_dir, filename)
+                saved_name = os.path.basename(save_path)
+                f.save(save_path)
+
+                saved.append({
+                    "name": saved_name,
+                    "rel_path": make_rel_from_root(save_path, EXPLORER_ROOT),
+                    "size_bytes": os.path.getsize(save_path) if os.path.exists(save_path) else 0,
+                })
+            except Exception as e:
+                errors.append({"name": f.filename or "", "error": safe_err(str(e))})
+
+        return jsonify({
+            "ok": True,
+            "target": build_dir_info(target_dir, EXPLORER_ROOT, {}),
+            "saved": saved,
+            "skipped": skipped,
+            "errors": errors,
+        })
+
     @app.post("/api/scan")
     def api_scan():
         data = request.get_json(force=True) or {}
@@ -289,7 +411,6 @@ def create_app():
 
     @app.post("/api/run")
     def api_run():
-        # 手動（変換のみ）
         if not API_BASE or not API_KEY:
             return jsonify({
                 "ok": False,
@@ -362,7 +483,12 @@ def create_app():
 
                     md_body = normalize_chunk_sep_lines(md_body, chunk_sep)
 
-                    md_save = attach_source_metadata(md_body, source_relpath=relpath, source_abspath=abspath, source_meta=meta)
+                    md_save = attach_source_metadata(
+                        md_body,
+                        source_relpath=relpath,
+                        source_abspath=abspath,
+                        source_meta=meta,
+                    )
 
                     os.makedirs(os.path.dirname(out_path), exist_ok=True)
                     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
@@ -387,7 +513,6 @@ def create_app():
 
     @app.post("/api/auto/run")
     def api_auto_run():
-        # 自動（変換→ナレッジ登録）
         if not API_BASE or not API_KEY:
             return jsonify({
                 "ok": False,
@@ -473,7 +598,12 @@ def create_app():
 
                     md_body = normalize_chunk_sep_lines(md_body, chunk_sep)
 
-                    md_save = attach_source_metadata(md_body, source_relpath=relpath, source_abspath=abspath, source_meta=meta)
+                    md_save = attach_source_metadata(
+                        md_body,
+                        source_relpath=relpath,
+                        source_abspath=abspath,
+                        source_meta=meta,
+                    )
 
                     os.makedirs(os.path.dirname(out_path), exist_ok=True)
                     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
@@ -481,8 +611,6 @@ def create_app():
 
                     yield sse_event("done_one", {"file": relpath, "out": os.path.relpath(out_path, output_dir)})
 
-                    # --- Dify knowledge register (create-by-text) ---
-                    # Difyには front-matter を送らない（チャンク解析/区切りが安定）
                     reg = register_markdown_to_dify(
                         dataset_id=dataset_id,
                         doc_name=os.path.basename(out_path),
@@ -502,7 +630,6 @@ def create_app():
                         "message": "ナレッジ登録 受付",
                     })
 
-                    # poll indexing status (log progress)
                     final = None
                     for prog in iter_indexing_status(
                         dataset_id=dataset_id,
@@ -527,7 +654,9 @@ def create_app():
                         raise RuntimeError("Dify埋め込みの進捗取得に失敗しました。")
 
                     if (final.get("indexing_status") or "").lower() != "completed":
-                        raise RuntimeError(f"Dify埋め込み失敗: status={final.get('indexing_status')} error={final.get('error')}")
+                        raise RuntimeError(
+                            f"Dify埋め込み失敗: status={final.get('indexing_status')} error={final.get('error')}"
+                        )
 
                     if int(final.get("total_segments") or 0) <= 0:
                         raise RuntimeError("Dify側で0セグメントのまま完了しました（separator/max_tokens/text を要確認）。")
@@ -759,7 +888,7 @@ def extract_excel_as_markdown_tables(path: str, ext: str) -> str:
 
 
 def extract_xlsx_like_as_markdown_tables(path: str) -> str:
-    MAX_ROWS_PER_SHEET = 200
+    max_rows_per_sheet = 200
     wb = load_workbook(path, data_only=True, read_only=True)
 
     out: List[str] = []
@@ -805,8 +934,8 @@ def extract_xlsx_like_as_markdown_tables(path: str) -> str:
 
             out.append("| " + " | ".join(vals) + " |")
             count += 1
-            if count >= MAX_ROWS_PER_SHEET:
-                out.append(f"(… {MAX_ROWS_PER_SHEET}行まで表示。続きは省略 …)")
+            if count >= max_rows_per_sheet:
+                out.append(f"(… {max_rows_per_sheet}行まで表示。続きは省略 …)")
                 break
 
         out.append("")
@@ -815,7 +944,7 @@ def extract_xlsx_like_as_markdown_tables(path: str) -> str:
 
 
 def extract_xls_as_markdown_tables(path: str) -> str:
-    MAX_ROWS_PER_SHEET = 200
+    max_rows_per_sheet = 200
     wb = xlrd.open_workbook(path)
     out: List[str] = []
 
@@ -864,8 +993,8 @@ def extract_xls_as_markdown_tables(path: str) -> str:
 
             out.append("| " + " | ".join(vals) + " |")
             count += 1
-            if count >= MAX_ROWS_PER_SHEET:
-                out.append(f"(… {MAX_ROWS_PER_SHEET}行まで表示。続きは省略 …)")
+            if count >= max_rows_per_sheet:
+                out.append(f"(… {max_rows_per_sheet}行まで表示。続きは省略 …)")
                 break
 
         out.append("")
@@ -936,16 +1065,11 @@ def normalize_pdf_like_text(s: str) -> str:
 
 
 def make_output_path(output_dir: str, rel_input_path: str) -> str:
-    """
-    仕様: yyyymmdd_hhmmss_元ファイル名.md
-    + 入力のサブフォルダ構造は維持
-    """
     rel_dir = os.path.dirname(rel_input_path)
     base_name = os.path.splitext(os.path.basename(rel_input_path))[0]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_name = f"{ts}_{base_name}.md"
 
-    # サブフォルダは sanitize しつつ維持
     safe_dir = sanitize_relpath(rel_dir) if rel_dir else ""
     return os.path.join(output_dir, safe_dir, out_name)
 
@@ -956,6 +1080,232 @@ def sanitize_relpath(p: str) -> str:
     p = p.replace("..", "__")
     p = re.sub(r'[<>:"|?*]', "_", p)
     return p
+
+
+def normalize_root_path(p: str) -> str:
+    if not p:
+        raise RuntimeError("ルートパスが未設定です。")
+    return os.path.normcase(os.path.abspath(os.path.normpath(p)))
+
+
+def make_rel_from_root(abs_path: str, root_dir: str) -> str:
+    rel = os.path.relpath(abs_path, root_dir)
+    if rel == ".":
+        return ""
+    return rel.replace("\\", "/")
+
+
+def path_depth_from_rel(rel_path: str) -> int:
+    rel = (rel_path or "").strip().replace("\\", "/").strip("/")
+    if not rel:
+        return 0
+    return len([p for p in rel.split("/") if p])
+
+
+def path_depth_from_root(abs_path: str, root_dir: str) -> int:
+    rel = make_rel_from_root(abs_path, root_dir)
+    return path_depth_from_rel(rel)
+
+
+def resolve_explorer_path(root_dir: str, rel_path: str) -> str:
+    root_norm = normalize_root_path(root_dir)
+
+    rel = (rel_path or "").strip().replace("/", os.sep).replace("\\", os.sep)
+    rel = rel.lstrip(os.sep)
+
+    candidate = os.path.normpath(os.path.join(root_dir, rel))
+    cand_norm = normalize_root_path(candidate)
+
+    if cand_norm != root_norm and not cand_norm.startswith(root_norm + os.sep):
+        raise RuntimeError("許可されていないパスです。")
+
+    return candidate
+
+
+def sanitize_upload_filename(name: str) -> str:
+    original = os.path.basename((name or "").replace("\x00", "").strip())
+    if not original or original in {".", ".."}:
+        return ""
+
+    safe = re.sub(r"[\x00-\x1f]", "", original)
+    safe = safe.replace("/", "_").replace("\\", "_")
+    safe = re.sub(r'[:*?"<>|]', "_", safe)
+    safe = safe.rstrip(" .")
+
+    if not safe or safe in {".", ".."}:
+        return ""
+    return safe
+
+
+def add_upload_timestamp_prefix(filename: str) -> str:
+    safe = sanitize_upload_filename(filename)
+    if not safe:
+        return ""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{ts}_{safe}"
+
+
+def build_unique_upload_path(target_dir: str, filename: str) -> str:
+    safe = sanitize_upload_filename(filename)
+    if not safe:
+        raise RuntimeError("使用できないファイル名です。")
+
+    base, ext = os.path.splitext(safe)
+    candidate = os.path.join(target_dir, safe)
+    seq = 1
+    while os.path.exists(candidate):
+        candidate = os.path.join(target_dir, f"{base}_{seq:02d}{ext}")
+        seq += 1
+        if seq > 9999:
+            raise RuntimeError("同名ファイルが多すぎるため保存できません。")
+    return candidate
+
+
+def matches_explorer_level_rule(depth: int, name: str) -> bool:
+    nm = str(name or "")
+    if depth == 1:
+        return len(nm) == 1
+    if depth == 2:
+        return len(nm) == 2
+    if depth == 4:
+        return nm == "元データ"
+    return True
+
+
+def list_visible_child_dir_names(abs_dir: str, root_dir: str) -> List[str]:
+    parent_depth = path_depth_from_root(abs_dir, root_dir)
+    next_depth = parent_depth + 1
+    if next_depth > EXPLORER_MAX_DEPTH:
+        return []
+
+    names: List[str] = []
+    try:
+        for name in os.listdir(abs_dir):
+            full = os.path.join(abs_dir, name)
+            if not os.path.isdir(full):
+                continue
+            if not matches_explorer_level_rule(next_depth, name):
+                continue
+            names.append(name)
+    except Exception:
+        return []
+
+    names.sort(key=lambda x: x.lower())
+    return names
+
+
+def dir_has_child_dirs(abs_dir: str) -> bool:
+    try:
+        for name in os.listdir(abs_dir):
+            full = os.path.join(abs_dir, name)
+            if os.path.isdir(full):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def dir_has_visible_child_dirs(abs_dir: str, root_dir: str) -> bool:
+    return bool(list_visible_child_dir_names(abs_dir, root_dir))
+
+
+def compute_visible_tree_stats(abs_dir: str, root_dir: str, cache: Optional[Dict[str, Dict[str, int]]] = None) -> Dict[str, int]:
+    cache = cache if cache is not None else {}
+    key = normalize_root_path(abs_dir)
+    if key in cache:
+        return cache[key]
+
+    depth = path_depth_from_root(abs_dir, root_dir)
+    child_names = list_visible_child_dir_names(abs_dir, root_dir)
+
+    file_count = 0
+    total_size_bytes = 0
+
+    if depth >= EXPLORER_MAX_DEPTH or not child_names:
+        try:
+            for name in os.listdir(abs_dir):
+                full = os.path.join(abs_dir, name)
+                if not os.path.isfile(full):
+                    continue
+                try:
+                    st = os.stat(full)
+                except Exception:
+                    continue
+                file_count += 1
+                total_size_bytes += int(st.st_size or 0)
+        except Exception:
+            pass
+    else:
+        for name in child_names:
+            full = os.path.join(abs_dir, name)
+            child_stats = compute_visible_tree_stats(full, root_dir, cache)
+            file_count += int(child_stats.get("file_count") or 0)
+            total_size_bytes += int(child_stats.get("total_size_bytes") or 0)
+
+    out = {
+        "file_count": file_count,
+        "total_size_bytes": total_size_bytes,
+    }
+    cache[key] = out
+    return out
+
+
+def build_dir_info(abs_dir: str, root_dir: str, stats_cache: Optional[Dict[str, Dict[str, int]]] = None) -> Dict[str, Any]:
+    depth = path_depth_from_root(abs_dir, root_dir)
+    stats = compute_visible_tree_stats(abs_dir, root_dir, stats_cache)
+    return {
+        "name": os.path.basename(abs_dir.rstrip("\\/")) or abs_dir,
+        "path": make_rel_from_root(abs_dir, root_dir),
+        "abs_path": abs_dir,
+        "depth": depth,
+        "can_upload": depth == UPLOAD_ALLOWED_DEPTH,
+        "has_children": dir_has_visible_child_dirs(abs_dir, root_dir),
+        "file_count": int(stats.get("file_count") or 0),
+        "total_size_bytes": int(stats.get("total_size_bytes") or 0),
+    }
+
+
+def list_explorer_dir(abs_dir: str, root_dir: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    dirs: List[Dict[str, Any]] = []
+    files: List[Dict[str, Any]] = []
+    stats_cache: Dict[str, Dict[str, int]] = {}
+
+    current_depth = path_depth_from_root(abs_dir, root_dir)
+
+    for name in sorted(os.listdir(abs_dir), key=lambda x: x.lower()):
+        full = os.path.join(abs_dir, name)
+        try:
+            st = os.stat(full)
+        except Exception:
+            continue
+
+        item = {
+            "name": name,
+            "path": make_rel_from_root(full, root_dir),
+            "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        if os.path.isdir(full):
+            depth = path_depth_from_root(full, root_dir)
+            if not matches_explorer_level_rule(depth, name):
+                continue
+
+            dir_info = build_dir_info(full, root_dir, stats_cache)
+            item["type"] = "dir"
+            item["depth"] = depth
+            item["can_upload"] = depth == UPLOAD_ALLOWED_DEPTH
+            item["has_children"] = False if depth >= EXPLORER_MAX_DEPTH else bool(dir_info.get("has_children"))
+            item["expandable"] = depth < EXPLORER_MAX_DEPTH and bool(dir_info.get("has_children"))
+            item["file_count"] = int(dir_info.get("file_count") or 0)
+            item["total_size_bytes"] = int(dir_info.get("total_size_bytes") or 0)
+            dirs.append(item)
+        else:
+            item["type"] = "file"
+            item["size_bytes"] = st.st_size
+            item["depth"] = current_depth
+            files.append(item)
+
+    return dirs, files
 
 
 def sse_event(event: str, data: Dict[str, Any]) -> str:
@@ -1114,7 +1464,6 @@ def _yaml_quote(v: str) -> str:
 
 
 def attach_source_metadata(md: str, source_relpath: str, source_abspath: str, source_meta: Dict[str, str]) -> str:
-    """Attach source fullpath + meta as YAML front-matter."""
     fm = {
         "source_relpath": source_relpath,
         "source_abspath": os.path.abspath(source_abspath),
@@ -1136,7 +1485,6 @@ def attach_source_metadata(md: str, source_relpath: str, source_abspath: str, so
 
 
 def normalize_chunk_sep_lines(md: str, chunk_sep: str) -> str:
-    """Normalize delimiter lines to exactly chunk_sep (trim spaces)."""
     sep = (chunk_sep or DEFAULT_CHUNK_SEP).strip() or DEFAULT_CHUNK_SEP
     lines = []
     for ln in (md or "").splitlines():
@@ -1169,7 +1517,6 @@ def split_chunks(md: str, chunk_sep: str) -> List[str]:
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate. Overestimates slightly to reduce accidental re-splitting."""
     if not text:
         return 0
     total = len(text)
@@ -1254,8 +1601,6 @@ def dify_list_datasets(api_base: str, api_key: str, prefix: str, limit: int = 10
 def dify_get_dataset_detail(api_base: str, api_key: str, dataset_id: str) -> Dict[str, Any]:
     url = f"{api_base}/datasets/{dataset_id}"
     r = requests.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=REQ_TIMEOUT_SEC)
-    # Dify環境/バージョン差で、このエンドポイントが GET を許可しない場合がある（405）。
-    # その場合は詳細表示を諦め、最低限の情報だけ返してドキュメント一覧の表示を継続する。
     if r.status_code == 405:
         return {
             "id": dataset_id,
@@ -1377,7 +1722,6 @@ def dify_create_document_by_text(
     dify_max_tokens: int,
     search_method: str = "hybrid_search",
 ) -> Tuple[str, str]:
-    """Return (doc_id, batch)."""
     url = f"{DATASET_API_BASE}/datasets/{dataset_id}/document/create-by-text"
 
     payload: Dict[str, Any] = {
@@ -1398,7 +1742,6 @@ def dify_create_document_by_text(
                 },
             },
         },
-        # ✅ PATCH不要：ここで hybrid_search を指定する
         "retrieval_model": {
             "search_method": search_method,
             "reranking_enable": False,
@@ -1433,13 +1776,9 @@ def dify_get_indexing_status(dataset_id: str, batch: str) -> List[Dict[str, Any]
 
 
 def register_markdown_to_dify(dataset_id: str, doc_name: str, markdown: str, chunk_sep: str) -> Dict[str, Any]:
-    # ① Markdownのチャンク長を解析 → max_tokens を自動決定（ファイルごと）
     stats = analyze_chunks_for_dify(markdown, chunk_sep)
-
-    # ② separator をアプリ指定値に固定
     sep = (chunk_sep or DEFAULT_CHUNK_SEP).strip()
 
-    # ③ retrieval_model.search_method = hybrid_search（create-by-textに同梱）
     doc_id, batch = dify_create_document_by_text(
         dataset_id=dataset_id,
         name=doc_name,
@@ -1505,4 +1844,4 @@ def iter_indexing_status(dataset_id: str, batch: str, doc_id: str):
 
 if __name__ == "__main__":
     app = create_app()
-    app.run(host="0.0.0.0", port=5210, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=5212, debug=False, threaded=True)
