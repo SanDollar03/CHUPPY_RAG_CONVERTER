@@ -18,6 +18,10 @@
     --r-pill: 999px;
     --control-h: 44px;
     --shadow-1: 0 10px 24px rgba(0, 0, 0, .08);
+    --page-x: 24px;
+    --topbar-offset: 96px;
+    --ondemand-sidebar-w: 210px;
+    --ondemand-topbar-h: var(--topbar-offset);
 }
 
 * {
@@ -42,17 +46,21 @@ body {
 .wrap {
     width: 100%;
     margin: 0;
-    padding: 12px 24px 20px;
+    padding: calc(var(--topbar-offset) + 12px) var(--page-x) 20px;
 }
 
 .topbar {
-    position: sticky;
-    top: 12px;
-    z-index: 10;
-    padding: 6px 16px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    z-index: 100;
+    margin: 0;
+    padding: 6px var(--page-x);
     background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: var(--r-card);
+    border-radius: 0;
     box-shadow: var(--shadow-1);
 }
 
@@ -70,8 +78,11 @@ body {
     max-width: 100%;
     min-width: 0;
     object-fit: contain;
+    object-position: left center;
     display: block;
-    flex: 1 1 240px;
+    margin: 0;
+    flex: 0 1 auto;
+    align-self: flex-start;
 }
 
 .topbar-actions {
@@ -81,6 +92,7 @@ body {
     gap: 10px;
     flex: 0 0 auto;
     min-width: 0;
+    margin-left: auto;
 }
 
 .modeBtns {
@@ -128,7 +140,7 @@ body {
 }
 
 .grid {
-    margin-top: 16px;
+    margin-top: 0;
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 18px;
@@ -509,10 +521,9 @@ body.modalOpen {
 }
 
 body.ondemand-page .ondemandGrid {
-    margin-top: 16px;
-    display: grid;
-    grid-template-columns: 280px 1fr;
-    gap: 14px;
+    margin-top: 0;
+    display: block;
+    position: relative;
 }
 
 body.ondemand-page .ondemandSidebarCard,
@@ -522,6 +533,8 @@ body.ondemand-page .ondemandMainCard {
 
 body.ondemand-page .ondemandSidebarCard {
     padding: 10px;
+    margin: 0;
+    border-radius: 0;
 }
 
 body.ondemand-page .ondemandSectionHead {
@@ -555,6 +568,8 @@ body.ondemand-page .folderTreeRow {
     display: flex;
     align-items: center;
     gap: 2px;
+    padding: 2px 0;
+    border-bottom: 1px solid rgba(0, 0, 0, .08);
 }
 
 body.ondemand-page .folderTreeChildren {
@@ -670,6 +685,36 @@ body.ondemand-page .ondemandCurrentMeta {
     color: var(--muted);
 }
 
+body.ondemand-page .ondemandKnowledgeBlock {
+    margin-top: 10px;
+}
+
+body.ondemand-page .ondemandKnowledgeLabel {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .92);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.45;
+    word-break: break-word;
+}
+
+body.ondemand-page .ondemandKnowledgeLabel.ok {
+    border-color: rgba(22, 163, 74, .28);
+    background: rgba(22, 163, 74, .08);
+    color: #166534;
+}
+
+body.ondemand-page .ondemandKnowledgeLabel.err {
+    border-color: rgba(185, 28, 28, .24);
+    background: rgba(185, 28, 28, .07);
+    color: #991b1b;
+}
+
 body.ondemand-page .ondemandTopActions button,
 body.ondemand-page .ondemandDropZone button {
     height: 34px;
@@ -682,11 +727,13 @@ body.ondemand-page .ondemandTopActions button {
 }
 
 body.ondemand-page .ondemandDropZone {
-    padding: 14px 12px;
+    margin-top: 18px;
+    padding: 18px 14px;
     text-align: center;
-    border: 1px dashed var(--accent-line);
+    border: 2px dashed rgba(124, 58, 237, .42);
     border-radius: 12px;
-    background: rgba(124, 58, 237, .04);
+    background: rgba(124, 58, 237, .06);
+    box-shadow: inset 0 0 0 1px rgba(124, 58, 237, .10);
 }
 
 body.ondemand-page .ondemandDropZone.ready {
@@ -716,12 +763,25 @@ body.ondemand-page .ondemandDropSub {
     color: var(--muted);
 }
 
+body.ondemand-page .ondemandQueueSection,
 body.ondemand-page .ondemandListSection,
 body.ondemand-page .ondemandLogSection {
     padding: 10px;
     border: 1px solid var(--line);
     border-radius: 12px;
     background: var(--surface);
+}
+
+body.ondemand-page .ondemandQueueSection {
+    margin-top: 18px;
+}
+
+body.ondemand-page .ondemandListSection {
+    margin-top: 18px;
+}
+
+body.ondemand-page .ondemandLogSection {
+    margin-top: 18px;
 }
 
 body.ondemand-page .ondemandListHead {
@@ -735,6 +795,28 @@ body.ondemand-page .ondemandListHead {
 body.ondemand-page .ondemandListState {
     font-size: 11px;
     color: var(--muted);
+}
+
+body.ondemand-page .ondemandQueueHint {
+    margin-bottom: 10px;
+    font-size: 11px;
+    color: var(--muted);
+}
+
+body.ondemand-page .ondemandQueueHint.ok {
+    color: #166534;
+}
+
+body.ondemand-page .ondemandQueueHint.warn {
+    color: #92400e;
+}
+
+body.ondemand-page .ondemandQueueHint.err {
+    color: #991b1b;
+}
+
+body.ondemand-page .ondemandQueueHint.info {
+    color: #5b21b6;
 }
 
 body.ondemand-page .ondemandEmptyBox {
@@ -783,6 +865,62 @@ body.ondemand-page .ondemandTable tr:last-child td {
     border-bottom: none;
 }
 
+body.ondemand-page .ondemandQueueTable td {
+    vertical-align: top;
+}
+
+body.ondemand-page .queueCellWrap {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+body.ondemand-page .queueProgressCell {
+    line-height: 1.45;
+}
+
+body.ondemand-page .queueStatus {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 72px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, .92);
+    font-size: 11px;
+    font-weight: 800;
+}
+
+body.ondemand-page .queueStatus.ok {
+    border-color: rgba(22, 163, 74, .28);
+    background: rgba(22, 163, 74, .08);
+    color: #166534;
+}
+
+body.ondemand-page .queueStatus.warn {
+    border-color: rgba(217, 119, 6, .28);
+    background: rgba(245, 158, 11, .10);
+    color: #92400e;
+}
+
+body.ondemand-page .queueStatus.info {
+    border-color: rgba(124, 58, 237, .24);
+    background: rgba(124, 58, 237, .08);
+    color: #5b21b6;
+}
+
+body.ondemand-page .queueStatus.skip {
+    border-color: rgba(180, 83, 9, .28);
+    background: rgba(180, 83, 9, .08);
+    color: #92400e;
+}
+
+body.ondemand-page .queueStatus.err {
+    border-color: rgba(185, 28, 28, .24);
+    background: rgba(185, 28, 28, .07);
+    color: #991b1b;
+}
+
 body.ondemand-page .ondemandLogBox {
     min-height: 120px;
     max-height: 220px;
@@ -819,6 +957,25 @@ body.ondemand-page .ondemandLogRow.info {
 
 body.ondemand-page .hidden {
     display: none !important;
+}
+
+@media (min-width: 981px) {
+    body.ondemand-page .ondemandSidebarCard {
+        position: fixed;
+        top: var(--ondemand-topbar-h);
+        left: 0;
+        width: var(--ondemand-sidebar-w);
+        height: calc(100vh - var(--ondemand-topbar-h));
+        margin: 0;
+        border-radius: 0;
+        overflow: auto;
+        z-index: 20;
+    }
+
+    body.ondemand-page .ondemandMainCard {
+        margin-left: calc(var(--ondemand-sidebar-w) + 18px);
+        min-height: calc(100vh - var(--ondemand-topbar-h) - 24px);
+    }
 }
 
 @media (min-width: 901px) {
@@ -913,8 +1070,13 @@ body.ondemand-page .hidden {
 }
 
 @media (max-width: 520px) {
+    :root {
+        --page-x: 12px;
+        --topbar-offset: 152px;
+    }
+
     .wrap {
-        padding: 12px;
+        padding: calc(var(--topbar-offset) + 12px) var(--page-x) 12px;
     }
 
     .topbar {
@@ -929,8 +1091,9 @@ body.ondemand-page .hidden {
 
     .topbar-banner {
         height: 52px;
-        margin: 0 auto;
+        margin: 0;
         flex: 0 0 auto;
+        align-self: flex-start;
     }
 
     .topbar-actions {
@@ -941,12 +1104,12 @@ body.ondemand-page .hidden {
     }
 
     .modeBtns {
-        justify-content: center;
+        justify-content: flex-start;
     }
 
     .model-pill {
         width: 100%;
-        justify-content: center;
+        justify-content: flex-start;
     }
 
     .row2,

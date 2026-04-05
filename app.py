@@ -4,6 +4,9 @@ import os
 import re
 import json
 import time
+import threading
+import uuid
+from collections import deque
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 
@@ -59,6 +62,17 @@ INDEXING_POLL_SEC = float(os.getenv("DIFY_INDEXING_POLL_SEC") or "2.0")
 INDEXING_MAX_WAIT_SEC = int(os.getenv("DIFY_INDEXING_MAX_WAIT_SEC") or "900")
 DIFY_MAX_SEG_TOKENS = int(os.getenv("DIFY_MAX_SEG_TOKENS") or "2000")
 
+ONDEMAND_QUEUE_MAX_RETRIES = int(os.getenv("ONDEMAND_QUEUE_MAX_RETRIES") or "5")
+ONDEMAND_QUEUE_HISTORY_LIMIT = int(os.getenv("ONDEMAND_QUEUE_HISTORY_LIMIT") or "300")
+ONDEMAND_DATASET_CACHE_TTL_SEC = int(os.getenv("ONDEMAND_DATASET_CACHE_TTL_SEC") or "60")
+ONDEMAND_DOCUMENT_CACHE_TTL_SEC = int(os.getenv("ONDEMAND_DOCUMENT_CACHE_TTL_SEC") or "60")
+ONDEMAND_QUEUE_USER = (os.getenv("ONDEMAND_QUEUE_USER") or "rag_converter").strip() or "rag_converter"
+ONDEMAND_QUEUE_STYLE = "rag_markdown"
+ONDEMAND_QUEUE_CHUNK_SEP = DEFAULT_CHUNK_SEP
+ONDEMAND_MONITOR_ENABLED = str(os.getenv("ONDEMAND_MONITOR_ENABLED") or "1").strip().lower() not in {"0", "false", "no", "off"}
+ONDEMAND_MONITOR_INTERVAL_SEC = max(3.0, float(os.getenv("ONDEMAND_MONITOR_INTERVAL_SEC") or "15"))
+ONDEMAND_SEEN_SIGNATURE_LIMIT = max(1000, int(os.getenv("ONDEMAND_SEEN_SIGNATURE_LIMIT") or "5000"))
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 NOTICE_PATH = os.path.join(BASE_DIR, "notice.txt")
 
@@ -78,6 +92,9 @@ def create_app():
 
     app = Flask(__name__)
     app.config["JSON_AS_ASCII"] = False
+
+    ONDEMAND_QUEUE.start()
+    ONDEMAND_MONITOR.start()
 
     @app.get("/")
     def index():
@@ -363,29 +380,51 @@ def create_app():
         saved = []
         skipped = []
         errors = []
+        queue_items = []
+        queue_errors = []
+        folder_rel_path = make_rel_from_root(target_dir, EXPLORER_ROOT)
 
         for f in files:
             try:
-                original_name = (f.filename or "").strip()
-                if not original_name:
+                original_name_raw = (f.filename or "").strip()
+                if not original_name_raw:
                     skipped.append({"name": "", "reason": "ファイル名が空です。"})
                     continue
 
-                filename = sanitize_upload_filename(original_name)
-                if not filename:
-                    skipped.append({"name": original_name, "reason": "使用できないファイル名です。"})
+                original_name = sanitize_upload_filename(original_name_raw)
+                if not original_name:
+                    skipped.append({"name": original_name_raw, "reason": "使用できないファイル名です。"})
                     continue
 
-                filename = add_upload_timestamp_prefix(filename)
-                save_path = build_unique_upload_path(target_dir, filename)
+                stored_name = add_upload_timestamp_prefix(original_name)
+                save_path = build_unique_upload_path(target_dir, stored_name)
                 saved_name = os.path.basename(save_path)
                 f.save(save_path)
 
-                saved.append({
+                saved_item = {
                     "name": saved_name,
+                    "original_name": original_name,
                     "rel_path": make_rel_from_root(save_path, EXPLORER_ROOT),
                     "size_bytes": os.path.getsize(save_path) if os.path.exists(save_path) else 0,
-                })
+                }
+                saved.append(saved_item)
+
+                try:
+                    task = ONDEMAND_QUEUE.enqueue_saved_file(
+                        folder_rel_path=folder_rel_path,
+                        folder_abs_path=target_dir,
+                        source_abs_path=save_path,
+                        source_rel_path=saved_item["rel_path"],
+                        source_saved_name=saved_name,
+                        source_original_name=original_name,
+                    )
+                    if task:
+                        queue_items.append(task)
+                except Exception as qerr:
+                    queue_errors.append({
+                        "name": original_name,
+                        "error": safe_err(str(qerr)),
+                    })
             except Exception as e:
                 errors.append({"name": f.filename or "", "error": safe_err(str(e))})
 
@@ -395,7 +434,24 @@ def create_app():
             "saved": saved,
             "skipped": skipped,
             "errors": errors,
+            "queue_items": queue_items,
+            "queue_errors": queue_errors,
         })
+
+    @app.get("/api/ondemand/queue")
+    def api_ondemand_queue():
+        try:
+            limit = int(request.args.get("limit") or "200")
+        except Exception:
+            limit = 200
+        limit = max(20, min(500, limit))
+
+        try:
+            snap = ONDEMAND_QUEUE.get_snapshot(limit=limit)
+            monitor = ONDEMAND_MONITOR.get_status()
+            return jsonify({"ok": True, **snap, "monitor": monitor})
+        except Exception as e:
+            return jsonify({"ok": False, "error": safe_err(str(e))}), 500
 
     @app.post("/api/scan")
     def api_scan():
@@ -1841,6 +1897,969 @@ def iter_indexing_status(dataset_id: str, batch: str, doc_id: str):
 
         time.sleep(INDEXING_POLL_SEC)
 
+
+
+_DATASET_CACHE_LOCK = threading.RLock()
+_DATASET_CACHE: Dict[str, Any] = {
+    "ts": 0.0,
+    "items": [],
+}
+
+_DOCUMENT_CACHE_LOCK = threading.RLock()
+_DOCUMENT_NAME_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def now_label() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def normalize_name_key(name: str) -> str:
+    return str(name or "").strip().lower()
+
+
+def get_datasets_cached(force: bool = False) -> List[Dict[str, Any]]:
+    with _DATASET_CACHE_LOCK:
+        cache_ts = float(_DATASET_CACHE.get("ts") or 0.0)
+        cache_items = list(_DATASET_CACHE.get("items") or [])
+        fresh = (time.time() - cache_ts) <= ONDEMAND_DATASET_CACHE_TTL_SEC
+        if cache_items and fresh and not force:
+            return cache_items
+
+    items = dify_list_datasets(
+        api_base=DATASET_API_BASE,
+        api_key=DATASET_API_KEY,
+        prefix=DATASET_NAME_PREFIX,
+        limit=100,
+    )
+
+    with _DATASET_CACHE_LOCK:
+        _DATASET_CACHE["ts"] = time.time()
+        _DATASET_CACHE["items"] = list(items or [])
+        return list(_DATASET_CACHE["items"])
+
+
+def find_dataset_by_name(dataset_name: str) -> Optional[Dict[str, Any]]:
+    if not dataset_name:
+        return None
+
+    key = normalize_name_key(dataset_name)
+    items = get_datasets_cached(force=False)
+    for it in items:
+        if normalize_name_key(it.get("name")) == key:
+            return dict(it)
+    return None
+
+
+def get_dataset_document_name_keys_cached(dataset_id: str, force: bool = False) -> set:
+    dataset_id = (dataset_id or "").strip()
+    if not dataset_id:
+        return set()
+
+    with _DOCUMENT_CACHE_LOCK:
+        entry = _DOCUMENT_NAME_CACHE.get(dataset_id) or {}
+        cache_ts = float(entry.get("ts") or 0.0)
+        cache_keys = set(entry.get("keys") or set())
+        fresh = (time.time() - cache_ts) <= ONDEMAND_DOCUMENT_CACHE_TTL_SEC
+        if cache_keys and fresh and not force:
+            return cache_keys
+
+    items, _ = dify_list_documents_all(
+        api_base=DATASET_API_BASE,
+        api_key=DATASET_API_KEY,
+        dataset_id=dataset_id,
+        keyword="",
+        limit=100,
+    )
+    keys = {normalize_name_key((it or {}).get("name")) for it in (items or []) if (it or {}).get("name")}
+
+    with _DOCUMENT_CACHE_LOCK:
+        _DOCUMENT_NAME_CACHE[dataset_id] = {
+            "ts": time.time(),
+            "keys": set(keys),
+        }
+        return set(keys)
+
+
+def dataset_document_exists_by_name(dataset_id: str, doc_name: str) -> bool:
+    return normalize_name_key(doc_name) in get_dataset_document_name_keys_cached(dataset_id, force=False)
+
+
+def remember_dataset_document_name(dataset_id: str, doc_name: str) -> None:
+    dataset_id = (dataset_id or "").strip()
+    if not dataset_id or not doc_name:
+        return
+
+    with _DOCUMENT_CACHE_LOCK:
+        entry = _DOCUMENT_NAME_CACHE.get(dataset_id) or {"ts": time.time(), "keys": set()}
+        keys = set(entry.get("keys") or set())
+        keys.add(normalize_name_key(doc_name))
+        entry["keys"] = keys
+        entry["ts"] = time.time()
+        _DOCUMENT_NAME_CACHE[dataset_id] = entry
+
+
+def build_ondemand_dataset_name(rel_path: str) -> str:
+    rel = (rel_path or "").strip().replace("\\", "/").strip("/")
+    parts = [p for p in rel.split("/") if p]
+    if len(parts) != UPLOAD_ALLOWED_DEPTH:
+        return ""
+
+    filtered = [p for p in parts if p != "元データ"]
+    if not filtered:
+        return ""
+
+    return DATASET_NAME_PREFIX + "_".join(filtered)
+
+
+def build_ondemand_markdown_path(folder_rel_path: str, original_name: str) -> Tuple[str, str, str]:
+    rel = (folder_rel_path or "").strip().replace("\\", "/").strip("/")
+    parts = [p for p in rel.split("/") if p]
+    if len(parts) != UPLOAD_ALLOWED_DEPTH:
+        raise RuntimeError("Lv5フォルダではないためMarkdown保存先を決定できません。")
+    if len(parts) < 5 or parts[3] != "元データ":
+        raise RuntimeError("元データ配下のLv5フォルダではないためMarkdown保存先を決定できません。")
+
+    md_parts = list(parts)
+    md_parts[3] = "マークダウン形式"
+    md_dir_rel = "/".join(md_parts)
+    md_dir_abs = resolve_explorer_path(EXPLORER_ROOT, md_dir_rel)
+
+    base_name = os.path.splitext(sanitize_upload_filename(original_name))[0]
+    if not base_name:
+        raise RuntimeError("Markdownファイル名を決定できません。")
+
+    md_name = f"{base_name}.md"
+    md_abs_path = os.path.join(md_dir_abs, md_name)
+    md_rel_path = make_rel_from_root(md_abs_path, EXPLORER_ROOT)
+    return md_abs_path, md_rel_path, md_name
+
+
+def is_ondemand_source_folder_rel(rel_path: str) -> bool:
+    rel = (rel_path or "").strip().replace("\\", "/").strip("/")
+    parts = [p for p in rel.split("/") if p]
+    return len(parts) == UPLOAD_ALLOWED_DEPTH and len(parts) >= 5 and parts[3] == "元データ"
+
+
+def strip_upload_timestamp_prefix(filename: str) -> str:
+    safe = sanitize_upload_filename(filename)
+    if not safe:
+        return ""
+    m = re.match(r"^\d{8}_\d{6}_(.+)$", safe)
+    if m:
+        return sanitize_upload_filename(m.group(1))
+    return safe
+
+
+def build_source_signature(source_abs_path: str, source_rel_path: str) -> str:
+    rel = normalize_name_key((source_rel_path or "").replace("\\", "/"))
+    try:
+        st = os.stat(source_abs_path)
+        size = int(st.st_size or 0)
+        mtime_ns = int(getattr(st, "st_mtime_ns", int(float(st.st_mtime or 0) * 1_000_000_000)))
+        return f"{rel}::{size}:{mtime_ns}"
+    except Exception:
+        return rel
+
+
+def iter_ondemand_watch_folders(root_dir: str):
+    root_abs = resolve_explorer_path(root_dir, "")
+
+    for current_dir, dirnames, _ in os.walk(root_abs):
+        depth = path_depth_from_root(current_dir, root_dir)
+
+        if depth >= EXPLORER_MAX_DEPTH:
+            dirnames[:] = []
+        else:
+            next_depth = depth + 1
+            dirnames[:] = [d for d in dirnames if matches_explorer_level_rule(next_depth, d)]
+            dirnames.sort(key=lambda x: x.lower())
+
+        if depth == UPLOAD_ALLOWED_DEPTH:
+            rel = make_rel_from_root(current_dir, root_dir)
+            if is_ondemand_source_folder_rel(rel):
+                yield current_dir, rel
+
+
+def list_ondemand_source_files(folder_abs_path: str, root_dir: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for name in sorted(os.listdir(folder_abs_path), key=lambda x: x.lower()):
+        abs_path = os.path.join(folder_abs_path, name)
+        if not os.path.isfile(abs_path):
+            continue
+
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in ALLOWED_EXTS:
+            continue
+
+        rel_path = make_rel_from_root(abs_path, root_dir)
+        original_name = strip_upload_timestamp_prefix(name) or sanitize_upload_filename(name)
+        if not original_name:
+            continue
+
+        out.append({
+            "source_abs_path": abs_path,
+            "source_rel_path": rel_path,
+            "source_saved_name": name,
+            "source_original_name": original_name,
+            "source_signature": build_source_signature(abs_path, rel_path),
+        })
+    return out
+
+
+def build_ondemand_doc_key(dataset_id: str, dataset_name: str, markdown_name: str) -> str:
+    ds_key = normalize_name_key(dataset_id or dataset_name)
+    md_key = normalize_name_key(markdown_name)
+    if not ds_key or not md_key:
+        return ""
+    return f"{ds_key}::{md_key}"
+
+
+class OnDemandQueueManager:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._cv = threading.Condition(self._lock)
+        self._started = False
+        self._thread: Optional[threading.Thread] = None
+        self._tasks: Dict[str, Dict[str, Any]] = {}
+        self._task_order: List[str] = []
+        self._folder_queues: Dict[str, deque] = {}
+        self._ready_folders: deque = deque()
+        self._running_task_id: str = ""
+        self._running_folder: str = ""
+        self._active_doc_keys: Dict[str, str] = {}
+        self._handled_source_signatures: Dict[str, Dict[str, Any]] = {}
+        self._handled_source_order: deque = deque()
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._thread = threading.Thread(target=self._worker_loop, name="ondemand-queue-worker", daemon=True)
+            self._thread.start()
+            self._started = True
+
+    def enqueue_saved_file(
+        self,
+        folder_rel_path: str,
+        folder_abs_path: str,
+        source_abs_path: str,
+        source_rel_path: str,
+        source_saved_name: str,
+        source_original_name: str,
+        source_signature: str = "",
+        dataset_hint: Optional[Dict[str, Any]] = None,
+        queue_message: str = "",
+    ) -> Dict[str, Any]:
+        folder_rel = (folder_rel_path or "").strip().replace("\\", "/").strip("/")
+        source_signature = (source_signature or build_source_signature(source_abs_path, source_rel_path)).strip()
+        dataset_name = build_ondemand_dataset_name(folder_rel)
+        dataset = dict(dataset_hint) if isinstance(dataset_hint, dict) and dataset_hint else None
+        message = ""
+
+        if not API_BASE or not API_KEY:
+            message = "生成AI API設定が未完了です。"
+        elif not DATASET_API_BASE or not DATASET_API_KEY:
+            message = "ナレッジAPI設定が未完了です。"
+        elif not dataset_name:
+            message = "ナレッジ名を判定できません。"
+        elif not dataset:
+            try:
+                dataset = find_dataset_by_name(dataset_name)
+            except Exception as e:
+                dataset = None
+                message = safe_err(str(e)) or "ナレッジ一覧の取得に失敗しました。"
+            if not dataset and not message:
+                message = "ナレッジが存在しません。管理者に問い合わせてください"
+
+        md_abs_path = ""
+        md_rel_path = ""
+        md_name = ""
+        try:
+            md_abs_path, md_rel_path, md_name = build_ondemand_markdown_path(folder_rel, source_original_name)
+        except Exception as e:
+            if not message:
+                message = safe_err(str(e))
+
+        doc_key = build_ondemand_doc_key((dataset or {}).get("id") or "", dataset_name, md_name)
+
+        with self._cv:
+            handled = self._handled_source_signatures.get(source_signature) if source_signature else None
+            if handled:
+                return dict(handled.get("snapshot") or {})
+
+            existing = self._find_task_by_source_signature_locked(source_signature)
+            if existing:
+                return self._public_task_snapshot(existing, self._queue_order_for_task_locked(existing.get("id") or ""))
+
+            if doc_key:
+                existing_task_id = self._active_doc_keys.get(doc_key) or ""
+                existing_task = self._tasks.get(existing_task_id) if existing_task_id else None
+                if existing_task:
+                    return self._public_task_snapshot(existing_task, self._queue_order_for_task_locked(existing_task_id))
+
+            task_id = uuid.uuid4().hex
+            now = now_label()
+            task = {
+                "id": task_id,
+                "folder_rel_path": folder_rel,
+                "folder_abs_path": folder_abs_path,
+                "folder_display": folder_rel or ".",
+                "source_abs_path": source_abs_path,
+                "source_rel_path": source_rel_path,
+                "source_saved_name": source_saved_name,
+                "source_original_name": source_original_name,
+                "source_display_name": source_original_name or source_saved_name,
+                "source_signature": source_signature,
+                "dataset_name": dataset_name,
+                "dataset_id": (dataset or {}).get("id") or "",
+                "markdown_abs_path": md_abs_path,
+                "markdown_rel_path": md_rel_path,
+                "markdown_name": md_name,
+                "doc_key": doc_key,
+                "status": "queued" if dataset and md_abs_path else "error",
+                "stage": "順番待ち" if dataset and md_abs_path else "受付不可",
+                "message": (queue_message or "アップロード待ちキューに追加しました。") if dataset and md_abs_path else message,
+                "attempt_no": 0,
+                "retry_count": 0,
+                "max_retry_count": ONDEMAND_QUEUE_MAX_RETRIES,
+                "created_at": now,
+                "updated_at": now,
+                "started_at": "",
+                "finished_at": "",
+                "terminal": not bool(dataset and md_abs_path),
+                "doc_id": "",
+                "batch": "",
+                "indexing_status": "",
+                "completed_segments": 0,
+                "total_segments": 0,
+                "last_error": message if message else "",
+                "markdown_written": False,
+                "queue_order": None,
+                "result": "pending" if dataset and md_abs_path else "error",
+            }
+
+            self._tasks[task_id] = task
+            self._task_order.append(task_id)
+            self._prune_locked()
+            if task["status"] == "queued":
+                if doc_key:
+                    self._active_doc_keys[doc_key] = task_id
+                fq = self._folder_queues.setdefault(folder_rel, deque())
+                fq.append(task_id)
+                self._ensure_folder_ready_locked(folder_rel)
+                self._cv.notify_all()
+
+            return self._public_task_snapshot(task, queue_order=None)
+
+    def get_snapshot(self, limit: int = 200) -> Dict[str, Any]:
+        with self._lock:
+            queue_order_map = self._build_queue_order_map_locked()
+            running_id = self._running_task_id
+            items: List[Dict[str, Any]] = []
+            summary = {
+                "queued": 0,
+                "running": 0,
+                "completed": 0,
+                "skipped": 0,
+                "error": 0,
+                "total": len(self._tasks),
+            }
+
+            for seq, task_id in enumerate(self._task_order, start=1):
+                task = self._tasks.get(task_id)
+                if not task:
+                    continue
+                st = str(task.get("status") or "")
+                if st in summary:
+                    summary[st] += 1
+                qord = 0 if task_id == running_id else queue_order_map.get(task_id)
+                item = self._public_task_snapshot(task, qord)
+                item["_seq"] = seq
+                items.append(item)
+
+            items.sort(key=self._sort_key)
+            for item in items:
+                item.pop("_seq", None)
+            if limit > 0:
+                items = items[:limit]
+
+            return {
+                "summary": summary,
+                "items": items,
+            }
+
+    def get_task_snapshot_by_id(self, task_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return None
+            return self._public_task_snapshot(task, self._queue_order_for_task_locked(task_id))
+
+    def get_task_snapshot_by_source_signature(self, source_signature: str) -> Optional[Dict[str, Any]]:
+        sig = (source_signature or "").strip()
+        if not sig:
+            return None
+        with self._lock:
+            handled = self._handled_source_signatures.get(sig)
+            if handled:
+                return dict(handled.get("snapshot") or {})
+            task = self._find_task_by_source_signature_locked(sig)
+            if not task:
+                return None
+            return self._public_task_snapshot(task, self._queue_order_for_task_locked(task.get("id") or ""))
+
+    def remember_handled_source_signature(self, source_signature: str, status: str, stage: str, message: str, result: str) -> None:
+        snapshot = {
+            "id": "",
+            "folder_rel_path": "",
+            "folder_display": "",
+            "source_display_name": "",
+            "source_saved_name": "",
+            "source_rel_path": "",
+            "dataset_name": "",
+            "dataset_id": "",
+            "markdown_name": "",
+            "markdown_rel_path": "",
+            "status": status,
+            "stage": stage,
+            "message": message,
+            "attempt_no": 0,
+            "retry_count": 0,
+            "max_retry_count": ONDEMAND_QUEUE_MAX_RETRIES,
+            "created_at": "",
+            "updated_at": now_label(),
+            "started_at": "",
+            "finished_at": now_label(),
+            "terminal": True,
+            "doc_id": "",
+            "batch": "",
+            "indexing_status": "",
+            "completed_segments": 0,
+            "total_segments": 0,
+            "queue_order": None,
+            "last_error": "",
+            "result": result,
+        }
+        with self._lock:
+            self._remember_handled_source_signature_locked(source_signature, snapshot)
+
+    def _sort_key(self, item: Dict[str, Any]):
+        status = str(item.get("status") or "")
+        queue_order = item.get("queue_order")
+        seq = int(item.get("_seq") or 0)
+        if status == "running":
+            return (0, 0, 0)
+        if status == "queued":
+            return (1, int(queue_order or 999999), 0)
+        return (2, 999999, -seq)
+
+    def _public_task_snapshot(self, task: Dict[str, Any], queue_order: Optional[int]) -> Dict[str, Any]:
+        return {
+            "id": task.get("id") or "",
+            "folder_rel_path": task.get("folder_rel_path") or "",
+            "folder_display": task.get("folder_display") or "",
+            "source_display_name": task.get("source_display_name") or "",
+            "source_saved_name": task.get("source_saved_name") or "",
+            "source_rel_path": task.get("source_rel_path") or "",
+            "dataset_name": task.get("dataset_name") or "",
+            "dataset_id": task.get("dataset_id") or "",
+            "markdown_name": task.get("markdown_name") or "",
+            "markdown_rel_path": task.get("markdown_rel_path") or "",
+            "status": task.get("status") or "",
+            "stage": task.get("stage") or "",
+            "message": task.get("message") or "",
+            "attempt_no": int(task.get("attempt_no") or 0),
+            "retry_count": int(task.get("retry_count") or 0),
+            "max_retry_count": int(task.get("max_retry_count") or 0),
+            "created_at": task.get("created_at") or "",
+            "updated_at": task.get("updated_at") or "",
+            "started_at": task.get("started_at") or "",
+            "finished_at": task.get("finished_at") or "",
+            "terminal": bool(task.get("terminal")),
+            "doc_id": task.get("doc_id") or "",
+            "batch": task.get("batch") or "",
+            "indexing_status": task.get("indexing_status") or "",
+            "completed_segments": int(task.get("completed_segments") or 0),
+            "total_segments": int(task.get("total_segments") or 0),
+            "queue_order": queue_order if queue_order is not None else None,
+            "last_error": task.get("last_error") or "",
+            "result": task.get("result") or "",
+        }
+
+    def _prune_locked(self) -> None:
+        if len(self._task_order) <= ONDEMAND_QUEUE_HISTORY_LIMIT:
+            return
+
+        removable = len(self._task_order) - ONDEMAND_QUEUE_HISTORY_LIMIT
+        kept: List[str] = []
+        for task_id in self._task_order:
+            task = self._tasks.get(task_id)
+            if not task:
+                continue
+            if removable > 0 and task.get("terminal"):
+                self._tasks.pop(task_id, None)
+                removable -= 1
+                continue
+            kept.append(task_id)
+        self._task_order = kept
+
+    def _ensure_folder_ready_locked(self, folder_rel_path: str) -> None:
+        folder = (folder_rel_path or "").strip()
+        if not folder:
+            return
+        if folder == self._running_folder:
+            return
+        if folder in self._ready_folders:
+            return
+        if self._folder_queues.get(folder):
+            self._ready_folders.append(folder)
+
+    def _build_queue_order_map_locked(self) -> Dict[str, int]:
+        order_map: Dict[str, int] = {}
+        temp_queues: Dict[str, deque] = {}
+        for folder, q in self._folder_queues.items():
+            temp_queues[folder] = deque(q)
+
+        temp_ready = deque(self._ready_folders)
+        running_task = self._tasks.get(self._running_task_id or "") if self._running_task_id else None
+        if running_task:
+            running_folder = str(running_task.get("folder_rel_path") or "")
+            if temp_queues.get(running_folder):
+                temp_ready.append(running_folder)
+
+        order = 1
+        while temp_ready:
+            folder = temp_ready.popleft()
+            q = temp_queues.get(folder)
+            if not q:
+                continue
+            task_id = q.popleft()
+            if task_id:
+                order_map[task_id] = order
+                order += 1
+            if q:
+                temp_ready.append(folder)
+            else:
+                temp_queues.pop(folder, None)
+
+        return order_map
+
+    def _queue_order_for_task_locked(self, task_id: str) -> Optional[int]:
+        if not task_id:
+            return None
+        if task_id == self._running_task_id:
+            return 0
+        return self._build_queue_order_map_locked().get(task_id)
+
+    def _find_task_by_source_signature_locked(self, source_signature: str) -> Optional[Dict[str, Any]]:
+        sig = (source_signature or "").strip()
+        if not sig:
+            return None
+        for task_id in self._task_order:
+            task = self._tasks.get(task_id)
+            if not task:
+                continue
+            if str(task.get("source_signature") or "") == sig:
+                return task
+        return None
+
+    def _remember_handled_source_signature_locked(self, source_signature: str, snapshot: Dict[str, Any]) -> None:
+        sig = (source_signature or "").strip()
+        if not sig:
+            return
+        self._handled_source_signatures[sig] = {
+            "snapshot": dict(snapshot or {}),
+            "ts": time.time(),
+        }
+        self._handled_source_order.append(sig)
+        while len(self._handled_source_order) > ONDEMAND_SEEN_SIGNATURE_LIMIT:
+            old = self._handled_source_order.popleft()
+            if old == sig:
+                continue
+            self._handled_source_signatures.pop(old, None)
+
+    def _update_task(self, task_id: str, **fields: Any) -> Dict[str, Any]:
+        with self._lock:
+            task = self._tasks[task_id]
+            for key, value in fields.items():
+                task[key] = value
+            task["updated_at"] = now_label()
+            return dict(task)
+
+    def _requeue_task_after_retry(self, task_id: str) -> None:
+        with self._cv:
+            task = self._tasks[task_id]
+            folder = str(task.get("folder_rel_path") or "")
+            fq = self._folder_queues.setdefault(folder, deque())
+            fq.append(task_id)
+            self._ensure_folder_ready_locked(folder)
+            self._cv.notify_all()
+
+    def _finish_task(self, task_id: str, status: str, stage: str, message: str, result: str = "") -> None:
+        with self._lock:
+            task = self._tasks[task_id]
+            task["status"] = status
+            task["stage"] = stage
+            task["message"] = message
+            task["terminal"] = True
+            task["finished_at"] = now_label()
+            task["updated_at"] = task["finished_at"]
+            if result:
+                task["result"] = result
+            doc_key = str(task.get("doc_key") or "")
+            if doc_key and self._active_doc_keys.get(doc_key) == task_id:
+                self._active_doc_keys.pop(doc_key, None)
+            if result in {"completed", "skipped"}:
+                self._remember_handled_source_signature_locked(
+                    str(task.get("source_signature") or ""),
+                    self._public_task_snapshot(task, queue_order=None),
+                )
+
+    def _cleanup_markdown_if_needed(self, task_id: str) -> None:
+        with self._lock:
+            task = self._tasks[task_id]
+            md_abs_path = str(task.get("markdown_abs_path") or "")
+            md_written = bool(task.get("markdown_written"))
+        if not md_abs_path or not md_written:
+            return
+        try:
+            if os.path.exists(md_abs_path):
+                os.remove(md_abs_path)
+        except Exception:
+            pass
+        with self._lock:
+            if task_id in self._tasks:
+                self._tasks[task_id]["markdown_written"] = False
+
+    def _worker_loop(self) -> None:
+        while True:
+            task_id = ""
+            folder = ""
+            with self._cv:
+                while True:
+                    while not self._ready_folders:
+                        self._cv.wait(timeout=1.0)
+                    folder = self._ready_folders.popleft()
+                    q = self._folder_queues.get(folder)
+                    if not q:
+                        self._folder_queues.pop(folder, None)
+                        continue
+                    task_id = q.popleft()
+                    if not q:
+                        self._folder_queues.pop(folder, None)
+                    break
+
+                self._running_task_id = task_id
+                self._running_folder = folder
+
+            try:
+                self._process_one_attempt(task_id)
+            except Exception as e:
+                self._finish_task(
+                    task_id,
+                    status="error",
+                    stage="内部エラー",
+                    message=safe_err(str(e)),
+                    result="error",
+                )
+                self._cleanup_markdown_if_needed(task_id)
+            finally:
+                with self._cv:
+                    self._running_task_id = ""
+                    self._running_folder = ""
+                    if self._folder_queues.get(folder):
+                        self._ensure_folder_ready_locked(folder)
+                        self._cv.notify_all()
+
+    def _process_one_attempt(self, task_id: str) -> None:
+        with self._lock:
+            task = self._tasks[task_id]
+            task["attempt_no"] = int(task.get("attempt_no") or 0) + 1
+            attempt_no = int(task["attempt_no"])
+            task["status"] = "running"
+            task["stage"] = "処理中"
+            task["message"] = f"処理を開始しました（{attempt_no}回目）。"
+            if not task.get("started_at"):
+                task["started_at"] = now_label()
+            task["updated_at"] = now_label()
+
+        try:
+            dataset_id = str(task.get("dataset_id") or "")
+            source_abs_path = str(task.get("source_abs_path") or "")
+            source_display_name = str(task.get("source_display_name") or "")
+            markdown_name = str(task.get("markdown_name") or "")
+            markdown_abs_path = str(task.get("markdown_abs_path") or "")
+            folder_rel_path = str(task.get("folder_rel_path") or "")
+
+            self._update_task(task_id, stage="差分確認", message="同一Markdownがナレッジに存在するか確認しています。")
+            if dataset_document_exists_by_name(dataset_id, markdown_name):
+                self._finish_task(
+                    task_id,
+                    status="skipped",
+                    stage="差分なし",
+                    message="同一Markdownが既にナレッジに存在するため登録をスキップしました。",
+                    result="skipped",
+                )
+                return
+
+            self._update_task(task_id, stage="テキスト抽出", message=f"{source_display_name} からテキストを抽出しています。")
+            raw_text, meta = extract_text(source_abs_path, knowledge_style=ONDEMAND_QUEUE_STYLE)
+            if not raw_text.strip():
+                raise RuntimeError("抽出テキストが空でした。")
+            if len(raw_text) > MAX_INPUT_CHARS:
+                raw_text = raw_text[:MAX_INPUT_CHARS] + "\n...(truncated)\n"
+
+            self._update_task(task_id, stage="Markdown変換", message="RAG向けMarkdownへ変換しています。")
+            md_body = convert_via_dify_chat_messages_secure(
+                api_base=API_BASE,
+                api_key=API_KEY,
+                user=ONDEMAND_QUEUE_USER,
+                source_path=folder_rel_path + "/" + source_display_name if folder_rel_path else source_display_name,
+                source_meta=meta,
+                text=raw_text,
+                knowledge_style=ONDEMAND_QUEUE_STYLE,
+                chunk_sep=ONDEMAND_QUEUE_CHUNK_SEP,
+            )
+            md_body = normalize_chunk_sep_lines(md_body, ONDEMAND_QUEUE_CHUNK_SEP)
+            md_save = attach_source_metadata(
+                md_body,
+                source_relpath=str(task.get("source_rel_path") or source_display_name),
+                source_abspath=source_abs_path,
+                source_meta=meta,
+            )
+
+            self._update_task(task_id, stage="Markdown保存", message="Markdownファイルを保存しています。")
+            os.makedirs(os.path.dirname(markdown_abs_path), exist_ok=True)
+            with open(markdown_abs_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(md_save)
+            self._update_task(task_id, markdown_written=True)
+
+            self._update_task(task_id, stage="ナレッジ登録", message="Difyナレッジへ登録しています。")
+            reg = register_markdown_to_dify(
+                dataset_id=dataset_id,
+                doc_name=markdown_name,
+                markdown=md_body,
+                chunk_sep=ONDEMAND_QUEUE_CHUNK_SEP,
+            )
+            self._update_task(
+                task_id,
+                doc_id=reg.get("doc_id") or "",
+                batch=reg.get("batch") or "",
+                message=(
+                    f"受付済み: chunks={reg.get('chunks')} / max_tokens={reg.get('dify_max_tokens')} / search=hybrid_search"
+                ),
+            )
+
+            final = None
+            for prog in iter_indexing_status(dataset_id=dataset_id, batch=reg["batch"], doc_id=reg["doc_id"]):
+                completed = int(prog.get("completed_segments") or 0)
+                total = int(prog.get("total_segments") or 0)
+                status = str(prog.get("indexing_status") or "")
+                msg = f"埋め込み中: status={status} / segments={completed}/{total}"
+                if prog.get("error"):
+                    msg += f" / error={safe_err(str(prog.get('error')))}"
+                self._update_task(
+                    task_id,
+                    stage="埋め込み待ち",
+                    indexing_status=status,
+                    completed_segments=completed,
+                    total_segments=total,
+                    message=msg,
+                )
+                if prog.get("terminal"):
+                    final = prog
+                    break
+
+            if not final:
+                raise RuntimeError("Dify埋め込みの進捗取得に失敗しました。")
+            if str(final.get("indexing_status") or "").lower() != "completed":
+                raise RuntimeError(
+                    f"Dify埋め込み失敗: status={final.get('indexing_status')} error={final.get('error')}"
+                )
+            if int(final.get("total_segments") or 0) <= 0:
+                raise RuntimeError("Dify側で0セグメントのまま完了しました。")
+
+            remember_dataset_document_name(dataset_id, markdown_name)
+            self._finish_task(
+                task_id,
+                status="completed",
+                stage="完了",
+                message="Markdown保存とナレッジ登録が完了しました。",
+                result="completed",
+            )
+        except Exception as e:
+            err = safe_err(str(e))
+            with self._lock:
+                task = self._tasks[task_id]
+                retry_count = int(task.get("retry_count") or 0)
+                max_retry = int(task.get("max_retry_count") or 0)
+                task["last_error"] = err
+
+            if retry_count < max_retry:
+                retry_count += 1
+                with self._lock:
+                    task = self._tasks[task_id]
+                    task["retry_count"] = retry_count
+                    task["status"] = "queued"
+                    task["stage"] = "リトライ待ち"
+                    task["message"] = f"{err} / リトライ {retry_count}/{max_retry} を待機しています。"
+                    task["updated_at"] = now_label()
+                    task["terminal"] = False
+                    task["result"] = "pending"
+                self._requeue_task_after_retry(task_id)
+                return
+
+            self._cleanup_markdown_if_needed(task_id)
+            self._finish_task(
+                task_id,
+                status="error",
+                stage="エラー終了",
+                message=f"{err} / リトライ上限に達したため中止しました。",
+                result="error",
+            )
+
+
+class OnDemandFolderMonitor:
+    def __init__(self, queue_manager: OnDemandQueueManager):
+        self._queue = queue_manager
+        self._lock = threading.RLock()
+        self._started = False
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+        self._last_scan_started_at = ""
+        self._last_scan_finished_at = ""
+        self._last_scan_error = ""
+        self._last_stats: Dict[str, Any] = {
+            "folders": 0,
+            "files": 0,
+            "enqueued": 0,
+            "known": 0,
+            "doc_exists": 0,
+            "dataset_missing": 0,
+            "not_target": 0,
+        }
+
+    def start(self) -> None:
+        if not ONDEMAND_MONITOR_ENABLED:
+            return
+        with self._lock:
+            if self._started:
+                return
+            self._thread = threading.Thread(target=self._loop, name="ondemand-folder-monitor", daemon=True)
+            self._thread.start()
+            self._started = True
+
+    def get_status(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "enabled": bool(ONDEMAND_MONITOR_ENABLED),
+                "running": bool(self._running),
+                "interval_sec": ONDEMAND_MONITOR_INTERVAL_SEC,
+                "last_scan_started_at": self._last_scan_started_at,
+                "last_scan_finished_at": self._last_scan_finished_at,
+                "last_scan_error": self._last_scan_error,
+                "last_stats": dict(self._last_stats),
+            }
+
+    def _set_scan_state(self, **fields: Any) -> None:
+        with self._lock:
+            for key, value in fields.items():
+                setattr(self, key, value)
+
+    def _loop(self) -> None:
+        while True:
+            started_at = now_label()
+            self._set_scan_state(_running=True, _last_scan_started_at=started_at, _last_scan_error="")
+            stats = {
+                "folders": 0,
+                "files": 0,
+                "enqueued": 0,
+                "known": 0,
+                "doc_exists": 0,
+                "dataset_missing": 0,
+                "not_target": 0,
+            }
+            last_error = ""
+
+            try:
+                self._scan_once(stats)
+            except Exception as e:
+                last_error = safe_err(str(e))
+
+            finished_at = now_label()
+            with self._lock:
+                self._running = False
+                self._last_scan_finished_at = finished_at
+                self._last_scan_error = last_error
+                self._last_stats = dict(stats)
+
+            time.sleep(ONDEMAND_MONITOR_INTERVAL_SEC)
+
+    def _scan_once(self, stats: Dict[str, int]) -> None:
+        if not API_BASE or not API_KEY or not DATASET_API_BASE or not DATASET_API_KEY:
+            return
+
+        datasets = get_datasets_cached(force=False)
+        dataset_map = {normalize_name_key((it or {}).get("name")): dict(it) for it in (datasets or []) if (it or {}).get("name")}
+
+        for folder_abs_path, folder_rel_path in iter_ondemand_watch_folders(EXPLORER_ROOT):
+            stats["folders"] += 1
+
+            if not is_ondemand_source_folder_rel(folder_rel_path):
+                stats["not_target"] += 1
+                continue
+
+            dataset_name = build_ondemand_dataset_name(folder_rel_path)
+            dataset = dataset_map.get(normalize_name_key(dataset_name)) if dataset_name else None
+
+            files = list_ondemand_source_files(folder_abs_path, EXPLORER_ROOT)
+            for info in files:
+                stats["files"] += 1
+                source_signature = str(info.get("source_signature") or "")
+                if source_signature and self._queue.get_task_snapshot_by_source_signature(source_signature):
+                    stats["known"] += 1
+                    continue
+
+                if not dataset:
+                    stats["dataset_missing"] += 1
+                    continue
+
+                md_name = ""
+                try:
+                    _, _, md_name = build_ondemand_markdown_path(folder_rel_path, str(info.get("source_original_name") or ""))
+                except Exception:
+                    continue
+
+                if dataset_document_exists_by_name(str(dataset.get("id") or ""), md_name):
+                    self._queue.remember_handled_source_signature(
+                        source_signature=source_signature,
+                        status="skipped",
+                        stage="差分なし",
+                        message="同一Markdownが既にナレッジに存在するため監視対象から除外しました。",
+                        result="skipped",
+                    )
+                    stats["doc_exists"] += 1
+                    continue
+
+                task = self._queue.enqueue_saved_file(
+                    folder_rel_path=folder_rel_path,
+                    folder_abs_path=folder_abs_path,
+                    source_abs_path=str(info.get("source_abs_path") or ""),
+                    source_rel_path=str(info.get("source_rel_path") or ""),
+                    source_saved_name=str(info.get("source_saved_name") or ""),
+                    source_original_name=str(info.get("source_original_name") or ""),
+                    source_signature=source_signature,
+                    dataset_hint=dataset,
+                    queue_message="フォルダ監視で検出し、順番待ちキューへ追加しました。",
+                )
+                if task and str(task.get("status") or "") == "queued":
+                    stats["enqueued"] += 1
+                else:
+                    stats["known"] += 1
+
+
+ONDEMAND_QUEUE = OnDemandQueueManager()
+ONDEMAND_MONITOR = OnDemandFolderMonitor(ONDEMAND_QUEUE)
 
 if __name__ == "__main__":
     app = create_app()
