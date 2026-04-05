@@ -1,5 +1,5 @@
 @echo off
-cd /d C:\Users\PJ\python\venv\chut_rag_cnverter
+cd /d C:\Users\PJ\python\test\chuppy_rag_converter
 echo add venv...
 call .\Scripts\activate.bat
 echo Flask start...
