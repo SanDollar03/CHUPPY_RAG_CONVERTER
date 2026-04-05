@@ -91,13 +91,14 @@
         </main>
     </div>
 
-    <script>
-        window.ONDemandConfig = {
-            rootPath: {{ explorer_root | tojson }},
-        maxDepth: { { explorer_max_depth | tojson } },
-        uploadAllowedDepth: { { upload_allowed_depth | tojson } }
-        };
+    <script id="ondemand-config" type="application/json">
+        {{ {
+            "rootPath": explorer_root,
+            "maxDepth": explorer_max_depth,
+            "uploadAllowedDepth": upload_allowed_depth
+        } | tojson }}
     </script>
+
     <script src="{{ url_for('static', filename='ondemand.js') }}"></script>
 </body>
 
