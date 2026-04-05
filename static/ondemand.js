@@ -1,5 +1,31 @@
 (() => {
-    const cfg = window.ONDemandConfig || {};
+    function loadOnDemandConfig() {
+        const defaults = {
+            rootPath: "",
+            maxDepth: 5,
+            uploadAllowedDepth: 5
+        };
+
+        const el = document.getElementById("ondemand-config");
+        if (!el) {
+            return defaults;
+        }
+
+        try {
+            const parsed = JSON.parse(el.textContent || "{}");
+            return {
+                ...defaults,
+                ...parsed
+            };
+        } catch (err) {
+            console.error("ONDemandConfig parse error:", err);
+            return defaults;
+        }
+    }
+
+    const cfg = loadOnDemandConfig();
+    window.ONDemandConfig = cfg;
+
     const MAX_DEPTH = Number(cfg.maxDepth || 5);
     const UPLOAD_ALLOWED_DEPTH = Number(cfg.uploadAllowedDepth || 5);
 
@@ -108,7 +134,7 @@
         <td>${escapeHtml(d.name)}</td>
         <td>${escapeHtml(d.mtime || "-")}</td>
         <td>-</td>
-      `;
+        `;
             tr.addEventListener("click", () => loadFolder(d.path || ""));
             fileTableBody.appendChild(tr);
         }
@@ -120,7 +146,7 @@
         <td>${escapeHtml(f.name)}</td>
         <td>${escapeHtml(f.mtime || "-")}</td>
         <td>${escapeHtml(formatBytes(f.size_bytes))}</td>
-      `;
+        `;
             fileTableBody.appendChild(tr);
         }
     }
@@ -204,8 +230,8 @@
         nodeBtn.type = "button";
         nodeBtn.className = "folderTreeNode";
         nodeBtn.innerHTML = `
-      <span class="folderTreeName">${escapeHtml(item.name || "/")}</span>
-      <span class="folderTreeLv">Lv${escapeHtml(item.depth)}</span>
+        <span class="folderTreeName">${escapeHtml(item.name || "/")}</span>
+        <span class="folderTreeLv">Lv${escapeHtml(item.depth)}</span>
     `;
 
         const children = document.createElement("div");
@@ -263,7 +289,7 @@
     }
 
     function highlightSelectedTree(path) {
-        document.querySelectorAll(".folderTreeItem.selected").forEach(el => el.classList.remove("selected"));
+        document.querySelectorAll(".folderTreeItem.selected").forEach((el) => el.classList.remove("selected"));
         const target = document.querySelector(`.folderTreeItem[data-path="${CSS.escape(path || "")}"]`);
         if (target) {
             target.classList.add("selected");
